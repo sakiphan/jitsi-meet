@@ -1,13 +1,21 @@
-// eslint-disable-next-line no-unused-vars
-import { Participant } from '../helpers/Participant';
+import BasePageObject from './BasePageObject';
 
 const AUDIO_MUTE = 'Mute microphone';
 const AUDIO_UNMUTE = 'Unmute microphone';
+const CHAT = 'Open chat';
+const CLOSE_CHAT = 'Close chat';
 const CLOSE_PARTICIPANTS_PANE = 'Close participants pane';
+const DESKTOP = 'Start sharing your screen';
+const HANGUP = 'Leave the meeting';
 const OVERFLOW_MENU = 'More actions menu';
 const OVERFLOW = 'More actions';
 const PARTICIPANTS = 'Open participants pane';
 const PROFILE = 'Edit your profile';
+const RAISE_HAND = 'Raise your hand';
+const SETTINGS = 'Open settings';
+const STOP_DESKTOP = 'Stop sharing your screen';
+const ENTER_TILE_VIEW_BUTTON = 'Enter tile view';
+const EXIT_TILE_VIEW_BUTTON = 'Exit tile view';
 const VIDEO_QUALITY = 'Manage video quality';
 const VIDEO_MUTE = 'Stop camera';
 const VIDEO_UNMUTE = 'Start camera';
@@ -15,18 +23,7 @@ const VIDEO_UNMUTE = 'Start camera';
 /**
  * The toolbar elements.
  */
-export default class Toolbar {
-    private participant: Participant;
-
-    /**
-     * Creates toolbar for a participant.
-     *
-     * @param {Participant} participant - The participants.
-     */
-    constructor(participant: Participant) {
-        this.participant = participant;
-    }
-
+export default class Toolbar extends BasePageObject {
     /**
      * Returns the button.
      *
@@ -35,7 +32,7 @@ export default class Toolbar {
      * @private
      */
     private getButton(accessibilityCSSSelector: string) {
-        return this.participant.driver.$(`[aria-label^="${accessibilityCSSSelector}"]`);
+        return this.participant.driver.$(`aria/${accessibilityCSSSelector}`);
     }
 
     /**
@@ -116,7 +113,6 @@ export default class Toolbar {
         await this.getButton(CLOSE_PARTICIPANTS_PANE).click();
     }
 
-
     /**
      * Clicks Participants pane button.
      *
@@ -124,7 +120,10 @@ export default class Toolbar {
      */
     async clickParticipantsPaneButton(): Promise<void> {
         this.participant.log('Clicking on: Participants pane Button');
-        await this.getButton(PARTICIPANTS).click();
+
+        // Special case for participants pane button, as it contains the number of participants and its label
+        // is changing
+        await this.participant.driver.$(`[aria-label^="${PARTICIPANTS}"]`).click();
     }
 
     /**
@@ -143,6 +142,73 @@ export default class Toolbar {
     }
 
     /**
+     * Clicks on the raise hand button that enables participants will to speak.
+     */
+    async clickRaiseHandButton(): Promise<void> {
+        this.participant.log('Clicking on: Raise hand Button');
+        await this.getButton(RAISE_HAND).click();
+    }
+
+    /**
+     * Clicks on the chat button that opens chat panel.
+     */
+    async clickChatButton(): Promise<void> {
+        this.participant.log('Clicking on: Chat Button');
+        await this.getButton(CHAT).click();
+    }
+
+    /**
+     * Clicks on the chat button that closes chat panel.
+     */
+    async clickCloseChatButton(): Promise<void> {
+        this.participant.log('Clicking on: Close Chat Button');
+        await this.getButton(CLOSE_CHAT).click();
+    }
+
+    /**
+     * Clicks on the desktop sharing button that starts desktop sharing.
+     */
+    async clickDesktopSharingButton() {
+        await this.getButton(DESKTOP).click();
+    }
+
+    /**
+     * Clicks on the desktop sharing button to stop it.
+     */
+    async clickStopDesktopSharingButton() {
+        await this.getButton(STOP_DESKTOP).click();
+    }
+
+    /**
+     * Clicks on the tile view button which enables tile layout.
+     */
+    async clickEnterTileViewButton() {
+        await this.getButton(ENTER_TILE_VIEW_BUTTON).click();
+    }
+
+    /**
+     * Clicks on the tile view button which exits tile layout.
+     */
+    async clickExitTileViewButton() {
+        await this.getButton(EXIT_TILE_VIEW_BUTTON).click();
+    }
+
+    /**
+     * Clicks on the hangup button that ends the conference.
+     */
+    async clickHangupButton(): Promise<void> {
+        this.participant.log('Clicking on: Hangup Button');
+        await this.getButton(HANGUP).click();
+    }
+
+    /**
+     * Clicks on the settings toolbar button which opens or closes the settings panel.
+     */
+    async clickSettingsButton() {
+        await this.clickButtonInOverflowMenu(SETTINGS);
+    }
+
+    /**
      * Ensure the overflow menu is open and clicks on a specified button.
      * @param accessibilityLabel The accessibility label of the button to be clicked.
      * @private
@@ -150,6 +216,11 @@ export default class Toolbar {
     private async clickButtonInOverflowMenu(accessibilityLabel: string) {
         await this.openOverflowMenu();
 
+        // sometimes the overflow button tooltip is over the last entry in the menu,
+        // so let's move focus away before clicking the button
+        await this.participant.driver.$('#overflow-context-menu').moveTo();
+
+        this.participant.log(`Clicking on: ${accessibilityLabel}`);
         await this.getButton(accessibilityLabel).click();
 
         await this.closeOverflowMenu();
@@ -160,7 +231,7 @@ export default class Toolbar {
      * @private
      */
     private async isOverflowMenuOpen() {
-        return await this.participant.driver.$$(`[aria-label^="${OVERFLOW_MENU}"]`).length > 0;
+        return await this.participant.driver.$$(`aria/${OVERFLOW_MENU}`).length > 0;
     }
 
     /**
@@ -205,7 +276,7 @@ export default class Toolbar {
      * @private
      */
     private async waitForOverFlowMenu(visible: boolean) {
-        await this.participant.driver.$(`[aria-label^="${OVERFLOW_MENU}"]`).waitForDisplayed({
+        await this.getButton(OVERFLOW_MENU).waitForDisplayed({
             reverse: !visible,
             timeout: 3000,
             timeoutMsg: `Overflow menu is not ${visible ? 'visible' : 'hidden'}`

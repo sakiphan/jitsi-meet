@@ -1,11 +1,16 @@
 /* global APP $ */
 
 import { multiremotebrowser } from '@wdio/globals';
+import { Key } from 'webdriverio';
 
 import { IConfig } from '../../react/features/base/config/configType';
 import { urlObjectToString } from '../../react/features/base/util/uri';
+import BreakoutRooms from '../pageobjects/BreakoutRooms';
+import ChatPanel from '../pageobjects/ChatPanel';
 import Filmstrip from '../pageobjects/Filmstrip';
 import IframeAPI from '../pageobjects/IframeAPI';
+import InviteDialog from '../pageobjects/InviteDialog';
+import Notifications from '../pageobjects/Notifications';
 import ParticipantsPane from '../pageobjects/ParticipantsPane';
 import SettingsDialog from '../pageobjects/SettingsDialog';
 import Toolbar from '../pageobjects/Toolbar';
@@ -112,14 +117,17 @@ export class Participant {
     /**
      * Joins conference.
      *
-     * @param {IContext} context - The context.
+     * @param {IContext} ctx - The context.
      * @param {IJoinOptions} options - Options for joining.
      * @returns {Promise<void>}
      */
-    async joinConference(context: IContext, options: IJoinOptions = {}): Promise<void> {
+    async joinConference(ctx: IContext, options: IJoinOptions = {}): Promise<void> {
         const config = {
-            room: context.roomName,
-            configOverwrite: this.config,
+            room: ctx.roomName,
+            configOverwrite: {
+                ...this.config,
+                ...options.configOverwrite || {}
+            },
             interfaceConfigOverwrite: {
                 SHOW_CHROME_EXTENSION_BANNER: false
             }
@@ -128,21 +136,21 @@ export class Participant {
         if (!options.skipDisplayName) {
             // @ts-ignore
             config.userInfo = {
-                displayName: this._name
+                displayName: options.displayName || this._name
             };
         }
 
-        if (context.iframeAPI) {
+        if (ctx.iframeAPI) {
             config.room = 'iframeAPITest.html';
         }
 
         let url = urlObjectToString(config) || '';
 
-        if (context.iframeAPI) {
+        if (ctx.iframeAPI) {
             const baseUrl = new URL(this.driver.options.baseUrl || '');
 
             // @ts-ignore
-            url = `${this.driver.iframePageBase}${url}&domain="${baseUrl.host}"&room="${context.roomName}"`;
+            url = `${this.driver.iframePageBase}${url}&domain="${baseUrl.host}"&room="${ctx.roomName}"`;
 
             if (baseUrl.pathname.length > 1) {
                 // remove leading slash
@@ -155,17 +163,12 @@ export class Participant {
 
         await this.driver.setTimeout({ 'pageLoad': 30000 });
 
-        // workaround for https://github.com/webdriverio/webdriverio/issues/13956
-        if (url.startsWith('file://')) {
-            // eslint-disable-next-line @typescript-eslint/no-empty-function
-            await this.driver.url(url).catch(() => {});
-        } else {
-            await this.driver.url(url.substring(1)); // drop the leading '/' so we can use the tenant if any
-        }
+        // drop the leading '/' so we can use the tenant if any
+        await this.driver.url(url.startsWith('/') ? url.substring(1) : url);
 
         await this.waitForPageToLoad();
 
-        if (context.iframeAPI) {
+        if (ctx.iframeAPI) {
             const mainFrame = this.driver.$('iframe');
 
             await this.driver.switchFrame(mainFrame);
@@ -235,9 +238,20 @@ export class Participant {
             async () => await this.driver.execute(() => document.readyState === 'complete'),
             {
                 timeout: 30_000, // 30 seconds
-                timeoutMsg: 'Timeout waiting for Page Load Request to complete.'
+                timeoutMsg: `Timeout waiting for Page Load Request to complete for ${this.name}.`
             }
         );
+    }
+
+    /**
+     * Waits for the tile view to display.
+     */
+    async waitForTileViewDisplay(reverse = false) {
+        await this.driver.$('//div[@id="videoconference_page" and contains(@class, "tile-view")]').waitForDisplayed({
+            reverse,
+            timeout: 10_000,
+            timeoutMsg: `Tile view did not display in 10s for ${this.name}`
+        });
     }
 
     /**
@@ -245,6 +259,30 @@ export class Participant {
      */
     async isInMuc() {
         return await this.driver.execute(() => typeof APP !== 'undefined' && APP.conference?.isJoined());
+    }
+
+    /**
+     * Checks if the participant is a moderator in the meeting.
+     */
+    async isModerator() {
+        return await this.driver.execute(() => typeof APP !== 'undefined'
+            && APP.store?.getState()['features/base/participants']?.local?.role === 'moderator');
+    }
+
+    /**
+     * Checks if the meeting supports breakout rooms.
+     */
+    async isBreakoutRoomsSupported() {
+        return await this.driver.execute(() => typeof APP !== 'undefined'
+            && APP.store?.getState()['features/base/conference'].conference?.getBreakoutRooms()?.isSupported());
+    }
+
+    /**
+     * Checks if the participant is in breakout room.
+     */
+    async isInBreakoutRoom() {
+        return await this.driver.execute(() => typeof APP !== 'undefined'
+            && APP.store?.getState()['features/base/conference'].conference?.getBreakoutRooms()?.isBreakoutRoom());
     }
 
     /**
@@ -257,7 +295,7 @@ export class Participant {
             () => this.isInMuc(),
             {
                 timeout: 10_000, // 10 seconds
-                timeoutMsg: 'Timeout waiting to join muc.'
+                timeoutMsg: `Timeout waiting to join muc for ${this.name}`
             }
         );
     }
@@ -273,7 +311,7 @@ export class Participant {
         return driver.waitUntil(async () =>
             await driver.execute(() => APP.conference.getConnectionState() === 'connected'), {
             timeout: 15_000,
-            timeoutMsg: 'expected ICE to be connected for 15s'
+            timeoutMsg: `expected ICE to be connected for 15s for ${this.name}`
         });
     }
 
@@ -282,7 +320,8 @@ export class Participant {
      *
      * @returns {Promise<void>}
      */
-    async waitForSendReceiveData(): Promise<void> {
+    async waitForSendReceiveData(
+            timeout = 15_000, msg = `expected to receive/send data in 15s for ${this.name}`): Promise<void> {
         const driver = this.driver;
 
         return driver.waitUntil(async () =>
@@ -296,15 +335,15 @@ export class Participant {
 
                 return rtpStats.uploadBitrate > 0 && rtpStats.downloadBitrate > 0;
             }), {
-            timeout: 15_000,
-            timeoutMsg: 'expected to receive/send data in 15s'
+            timeout,
+            timeoutMsg: msg
         });
     }
 
     /**
      * Waits for remote streams.
      *
-     * @param {number} number - The number of remote streams o wait for.
+     * @param {number} number - The number of remote streams to wait for.
      * @returns {Promise<void>}
      */
     waitForRemoteStreams(number: number): Promise<void> {
@@ -313,8 +352,41 @@ export class Participant {
         return driver.waitUntil(async () =>
             await driver.execute(count => APP.conference.getNumberOfParticipantsWithTracks() >= count, number), {
             timeout: 15_000,
-            timeoutMsg: 'expected remote streams in 15s'
+            timeoutMsg: `expected remote streams in 15s for ${this.name}`
         });
+    }
+
+    /**
+     * Waits for number of participants.
+     *
+     * @param {number} number - The number of participant to wait for.
+     * @param {string} msg - A custom message to use.
+     * @returns {Promise<void>}
+     */
+    waitForParticipants(number: number, msg?: string): Promise<void> {
+        const driver = this.driver;
+
+        return driver.waitUntil(async () =>
+            await driver.execute(count => APP.conference.listMembers().length === count, number), {
+            timeout: 15_000,
+            timeoutMsg: msg || `not the expected participants ${number} in 15s for ${this.name}`
+        });
+    }
+
+    /**
+     * Returns the chat panel for this participant.
+     */
+    getChatPanel(): ChatPanel {
+        return new ChatPanel(this);
+    }
+
+    /**
+     * Returns the BreakoutRooms for this participant.
+     *
+     * @returns {BreakoutRooms}
+     */
+    getBreakoutRooms(): BreakoutRooms {
+        return new BreakoutRooms(this);
     }
 
     /**
@@ -333,6 +405,22 @@ export class Participant {
      */
     getFilmstrip(): Filmstrip {
         return new Filmstrip(this);
+    }
+
+    /**
+     * Returns the invite dialog for this participant.
+     *
+     * @returns {InviteDialog}
+     */
+    getInviteDialog(): InviteDialog {
+        return new InviteDialog(this);
+    }
+
+    /**
+     * Returns the notifications.
+     */
+    getNotifications(): Notifications {
+        return new Notifications(this);
     }
 
     /**
@@ -393,16 +481,40 @@ export class Participant {
     }
 
     /**
-     * Returns the local display name.
+     * Returns the local display name element.
+     * @private
      */
-    async getLocalDisplayName() {
+    private async getLocalDisplayNameElement() {
         const localVideoContainer = this.driver.$('span[id="localVideoContainer"]');
 
         await localVideoContainer.moveTo();
 
-        const localDisplayName = localVideoContainer.$('span[id="localDisplayName"]');
+        return localVideoContainer.$('span[id="localDisplayName"]');
+    }
 
-        return await localDisplayName.getText();
+    /**
+     * Returns the local display name.
+     */
+    async getLocalDisplayName() {
+        return await (await this.getLocalDisplayNameElement()).getText();
+    }
+
+    /**
+     * Sets the display name of the local participant.
+     */
+    async setLocalDisplayName(displayName: string) {
+        const localDisplayName = await this.getLocalDisplayNameElement();
+
+        await localDisplayName.click();
+
+        await this.driver.keys(displayName);
+        await this.driver.keys(Key.Return);
+
+        // just click somewhere to lose focus, to make sure editing has ended
+        const localVideoContainer = this.driver.$('span[id="localVideoContainer"]');
+
+        await localVideoContainer.moveTo();
+        await localVideoContainer.click();
     }
 
     /**
@@ -429,6 +541,13 @@ export class Participant {
      */
     async getLargeVideoResource() {
         return await this.driver.execute(() => APP.UI.getLargeVideoID());
+    }
+
+    /**
+     * Returns the source of the large video currently shown.
+     */
+    async getLargeVideoId() {
+        return await this.driver.execute('return document.getElementById("largeVideo").srcObject.id');
     }
 
     /**
@@ -489,7 +608,7 @@ export class Participant {
     async assertDisplayNameVisibleOnStage(value: string) {
         const displayNameEl = this.driver.$('div[data-testid="stage-display-name"]');
 
-        expect(await displayNameEl.isDisplayed()).toBeTrue();
+        expect(await displayNameEl.isDisplayed()).toBe(true);
         expect(await displayNameEl.getText()).toBe(value);
     }
 }

@@ -5,6 +5,7 @@ local http = require 'net.http';
 local jid = require 'util.jid';
 local st = require 'util.stanza';
 local util = module:require 'util';
+local is_admin = util.is_admin;
 local is_healthcheck_room = util.is_healthcheck_room;
 local is_sip_jigasi = util.is_sip_jigasi;
 local room_jid_match_rewrite = util.room_jid_match_rewrite;
@@ -12,13 +13,13 @@ local get_room_from_jid = util.get_room_from_jid;
 local get_focus_occupant = util.get_focus_occupant;
 local get_room_by_name_and_subdomain = util.get_room_by_name_and_subdomain;
 local internal_room_jid_match_rewrite = util.internal_room_jid_match_rewrite;
+local table_find = util.table_find;
 local is_vpaas = util.is_vpaas;
 local is_sip_jibri_join = util.is_sip_jibri_join;
 local process_host_module = util.process_host_module;
 local respond_iq_result = util.respond_iq_result;
 local split_string = util.split_string;
 local new_id = require 'util.id'.medium;
-local um_is_admin = require 'core.usermanager'.is_admin;
 local json = require 'cjson.safe';
 local inspect = require 'inspect';
 
@@ -50,10 +51,6 @@ local http_headers = {
     ["Accept"] = "application/json"
 };
 
-local function is_admin(jid)
-    return um_is_admin(jid, module.host);
-end
-
 -- This is a map to keep data for room and the jids that were allowed to join after visitor mode is enabled
 -- automatically allowed or allowed by a moderator
 local visitors_promotion_map = {};
@@ -75,13 +72,31 @@ function send_json_message(to_jid, json_message)
     module:send(stanza);
 end
 
-local function request_promotion_received(room, from_jid, from_vnode, nick, time, user_id, force_promote)
+local function request_promotion_received(room, from_jid, from_vnode, nick, time, user_id, group_id, force_promote_requested)
     -- if visitors is enabled for the room
     if visitors_promotion_map[room.jid] then
+        local force_promote = auto_allow_promotion;
+
+        if not force_promote and force_promote_requested == 'true' then
+            -- Let's do the force_promote checks if requested
+
+            -- _data.moderator_id can be used from external modules to set single moderator for a meeting
+            -- or a whole group of moderators
+            if room._data.moderator_id == user_id or room._data.moderator_id == group_id
+
+                -- all moderators are allowed to auto promote, the fact that user_id and force_promote_requested are set
+                -- means that the user has token and is moderator on visitor node side
+                or room._data.allModerators
+
+                -- can be used by external modules to set multiple moderator ids (table of values)
+                or table_find(room._data.moderators, user_id)
+            then
+                force_promote = true;
+            end
+        end
+
         -- only for raise hand, ignore lowering the hand
-        if time and time > 0 and (
-            auto_allow_promotion
-            or force_promote == 'true') then
+        if time and time > 0 and force_promote then
             --  we are in auto-allow mode, let's reply with accept
             -- we store where the request is coming from so we can send back the response
             local username = new_id():lower();
@@ -284,6 +299,7 @@ local function stanza_handler(event)
             display_name,
             tonumber(request_promotion.attr.time),
             request_promotion.attr.userId,
+            request_promotion.attr.groupId,
             request_promotion.attr.forcePromote
         );
     end
@@ -535,17 +551,11 @@ process_host_module(muc_domain_prefix..'.'..muc_domain_base, function(host_modul
             end
         end
     end);
-    host_module:hook("message/bare", function(event)
-        local stanza = event.stanza;
 
-        if stanza.attr.type ~= "groupchat" then
-            return;
-        end
-        local json_data = stanza:get_child_text("json-message", "http://jitsi.org/jitmeet");
-        if json_data == nil then
-            return;
-        end
-        local data, error = json.decode(json_data);
+    host_module:hook('jitsi-endpoint-message-received', function(event)
+        local data, error, occupant, room, stanza
+            = event.message, event.error, event.occupant, event.room, event.stanza;
+
         if not data or data.type ~= 'visitors'
             or (data.action ~= "promotion-response" and data.action ~= "demote-request") then
             if error then
@@ -554,17 +564,9 @@ process_host_module(muc_domain_prefix..'.'..muc_domain_base, function(host_modul
             return;
         end
 
-        local room = get_room_from_jid(event.stanza.attr.to);
-
-        local occupant_jid = event.stanza.attr.from;
-        local occupant = room:get_occupant_by_real_jid(occupant_jid);
-        if not occupant then
-            module:log("error", "Occupant %s was not found in room %s", occupant_jid, room.jid)
-            return
-        end
         if occupant.role ~= 'moderator' then
             module:log('error', 'Occupant %s sending response message but not moderator in room %s',
-                occupant_jid, room.jid);
+                occupant.jid, room.jid);
             return false;
         end
 
@@ -590,7 +592,6 @@ process_host_module(muc_domain_prefix..'.'..muc_domain_base, function(host_modul
                     end
                 end
             end
-
         else
             if data.id then
                 process_promotion_response(room, data.id, data.approved and 'true' or 'false');
@@ -604,6 +605,7 @@ process_host_module(muc_domain_prefix..'.'..muc_domain_base, function(host_modul
 
         return true; -- halt processing, but return true that we handled it
     end);
+
     if visitors_queue_service then
         host_module:hook('muc-room-created', function (event)
             local room = event.room;

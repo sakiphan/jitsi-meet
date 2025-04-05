@@ -2,9 +2,9 @@ import { AnyAction } from 'redux';
 
 import { IStore } from '../app/types';
 import { ENDPOINT_MESSAGE_RECEIVED } from '../base/conference/actionTypes';
+import { MEET_FEATURES } from '../base/jwt/constants';
 import { isJwtFeatureEnabled } from '../base/jwt/functions';
 import JitsiMeetJS from '../base/lib-jitsi-meet';
-import { isLocalParticipantModerator } from '../base/participants/functions';
 import MiddlewareRegistry from '../base/redux/MiddlewareRegistry';
 import { TRANSCRIBER_JOINED } from '../transcribing/actionTypes';
 
@@ -196,7 +196,7 @@ function _endpointMessageReceived(store: IStore, next: Function, action: AnyActi
         // Regex to filter out all possible country codes after language code:
         // this should catch all notations like 'en-GB' 'en_GB' and 'enGB'
         // and be independent of the country code length
-        if (_getPrimaryLanguageCode(json.language) !== _getPrimaryLanguageCode(language)) {
+        if (!language || (_getPrimaryLanguageCode(json.language) !== _getPrimaryLanguageCode(language))) {
             return next(action);
         }
 
@@ -293,8 +293,7 @@ function _requestingSubtitlesChange(
         enabled);
 
     if (enabled && conference?.getTranscriptionStatus() === JitsiMeetJS.constants.transcriptionStatus.OFF) {
-        const isModerator = isLocalParticipantModerator(state);
-        const featureAllowed = isJwtFeatureEnabled(getState(), 'transcription', isModerator, false);
+        const featureAllowed = isJwtFeatureEnabled(getState(), MEET_FEATURES.TRANSCRIPTION, false);
 
         if (featureAllowed) {
             conference?.dial(TRANSCRIBER_DIAL_NUMBER)
